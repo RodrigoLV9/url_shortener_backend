@@ -5,16 +5,9 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
-import { randomUUID } from 'crypto';
 import { LoginAuthDto } from './dto/login-auth.dto';
 import { RegisterAuthDto } from './dto/register-auth.dto';
-
-type AuthUser = {
-  id: string;
-  name: string;
-  email: string;
-  passwordHash: string;
-};
+import { PrismaService } from '../prisma/prisma.service';
 
 export type AuthResponse = {
   accessToken: string;
@@ -27,13 +20,16 @@ export type AuthResponse = {
 
 @Injectable()
 export class AuthService {
-  private readonly usersByEmail = new Map<string, AuthUser>();
-
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly prismaService: PrismaService,
+  ) {}
 
   async register(registerAuthDto: RegisterAuthDto): Promise<AuthResponse> {
     const normalizedEmail = registerAuthDto.email.toLowerCase().trim();
-    const existingUser = this.usersByEmail.get(normalizedEmail);
+    const existingUser = await this.prismaService.user.findUnique({
+      where: { email: normalizedEmail },
+    });
 
     if (existingUser) {
       throw new ConflictException('Email is already registered');
@@ -41,21 +37,22 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(registerAuthDto.password, 10);
 
-    const user: AuthUser = {
-      id: randomUUID(),
-      name: registerAuthDto.name.trim(),
-      email: normalizedEmail,
-      passwordHash,
-    };
-
-    this.usersByEmail.set(normalizedEmail, user);
+    const user = await this.prismaService.user.create({
+      data: {
+        name: registerAuthDto.name.trim(),
+        email: normalizedEmail,
+        password: passwordHash,
+      },
+    });
 
     return this.buildAuthResponse(user);
   }
 
   async login(loginAuthDto: LoginAuthDto): Promise<AuthResponse> {
     const normalizedEmail = loginAuthDto.email.toLowerCase().trim();
-    const user = this.usersByEmail.get(normalizedEmail);
+    const user = await this.prismaService.user.findUnique({
+      where: { email: normalizedEmail },
+    });
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -63,7 +60,7 @@ export class AuthService {
 
     const isPasswordValid = await bcrypt.compare(
       loginAuthDto.password,
-      user.passwordHash,
+      user.password,
     );
 
     if (!isPasswordValid) {
@@ -73,7 +70,11 @@ export class AuthService {
     return this.buildAuthResponse(user);
   }
 
-  private async buildAuthResponse(user: AuthUser): Promise<AuthResponse> {
+  private async buildAuthResponse(user: {
+    id: string;
+    name: string;
+    email: string;
+  }): Promise<AuthResponse> {
     const accessToken = await this.jwtService.signAsync({
       sub: user.id,
       email: user.email,
